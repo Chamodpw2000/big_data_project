@@ -1,0 +1,187 @@
+# Fleet Lambda Pipeline - Steps 3 + 5 (Kafka, Postgres, Spark speed layer)
+# Airflow, API and dashboard services are added in later steps.
+
+services:
+
+  # ---------- Ingestion: Kafka in KRaft mode (no ZooKeeper needed) ----------
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka
+    ports:
+      - "9094:9094"            # for scripts running on your laptop (localhost:9094)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 168   # keep events 7 days (allows replay)
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # One-shot job: creates the telemetry topic with 3 partitions, then exits
+  kafka-init:
+    image: apache/kafka:3.8.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092
+      --create --if-not-exists --topic fleet.telemetry
+      --partitions 3 --replication-factor 1 &&
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --describe --topic fleet.telemetry"
+    restart: "no"
+
+  # Web UI to inspect topics, partitions and messages (observability for ingestion)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8085:8080"            # 8080 is reserved for Airflow later
+    environment:
+      KAFKA_CLUSTERS_0_NAME: fleet-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+  # ---------- Storage / Serving: PostgreSQL ----------
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+      POSTGRES_DB: fleet
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d   # runs *.sql alphabetically on FIRST start only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d fleet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- SPEED LAYER: Spark Structured Streaming ----------
+  spark-speed:
+    image: apache/spark:3.5.1-python3
+    container_name: spark-speed
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    working_dir: /opt/app
+    user: root                  # so it can write to the mounted data folder
+    ports:
+      - "4040:4040"             # Spark UI for this streaming job
+    environment:
+      HOME: /tmp
+      PYTHONPATH: /opt/app      # lets the job import common.zones
+      KAFKA_BOOTSTRAP: kafka:9092
+      JDBC_URL: jdbc:postgresql://postgres:5432/fleet
+      STARTING_OFFSETS: latest  # set to "earliest" to replay the whole topic
+      LAKE_PATH: /opt/app/data/lake/raw/telemetry
+      CHECKPOINT_ROOT: /opt/checkpoints
+    volumes:
+      - ./:/opt/app             # project code + data folder
+      - spark-checkpoints:/opt/checkpoints
+      - ivy-cache:/tmp/.ivy2    # downloaded jars persist between restarts
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[2]
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3
+      --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.sql.shuffle.partitions=4
+      --conf spark.ui.showConsoleProgress=false
+      streaming/speed_layer.py
+
+  # ---------- ORCHESTRATION: Airflow (webserver + scheduler in one container) ----------
+  airflow:
+    build: ./airflow
+    container_name: airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fleet:fleet@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/app/airflow/dags
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "15"
+      PYTHONPATH: /opt/app
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      # paths and connections used by the DAG and the Spark batch job
+      LAKE_PATH: /opt/app/data/lake/raw/telemetry
+      LANDING_DIR: /opt/app/data/landing
+      REPORT_DIR: /opt/app/data/reports
+      JDBC_URL: jdbc:postgresql://postgres:5432/fleet
+      PG_DSN: postgresql://fleet:fleet@postgres:5432/fleet
+    volumes:
+      - ./:/opt/app
+      - airflow-logs:/opt/airflow/logs
+      # NOTE: the ivy-cache volume is NOT shared with spark-speed here. That
+      # container runs as root and Airflow runs as uid 50000, so a shared cache
+      # gives "Permission denied". Airflow downloads its own copy of the small
+      # Postgres driver into its home directory instead.
+    working_dir: /opt/app
+    # NOTE: keep this as one line. In YAML folded style an extra-indented line
+    # keeps its newline, which would split the command in the middle.
+    command: ["bash", "-c", "airflow db migrate && (airflow users create --role Admin --username admin --password admin --firstname fleet --lastname ops --email admin@example.com || true) && (airflow scheduler &) && exec airflow webserver"]
+
+  # ---------- SERVING LAYER: REST API ----------
+  api:
+    build: ./serving
+    container_name: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      PG_DSN: postgresql://fleet:fleet@postgres:5432/fleet
+      STALE_AFTER_SECONDS: "60"
+      PYTHONPATH: /opt/app
+    volumes:
+      - ./:/opt/app
+    working_dir: /opt/app
+    command: uvicorn serving.api.main:app --host 0.0.0.0 --port 8000
+
+  # ---------- SERVING LAYER: live dashboard ----------
+  dashboard:
+    build: ./serving
+    container_name: dashboard
+    depends_on:
+      - api
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+      REFRESH_SECONDS: "5"
+      PYTHONPATH: /opt/app
+    volumes:
+      - ./:/opt/app
+    working_dir: /opt/app
+    command: streamlit run serving/dashboard/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+
+volumes:
+  pgdata:
+  spark-checkpoints:
+  ivy-cache:
+  airflow-logs:
