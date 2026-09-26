@@ -16,7 +16,7 @@ import argparse
 import csv
 import os
 
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
 LAKE_PATH = os.getenv("LAKE_PATH", "/opt/app/data/lake/raw/telemetry")
@@ -119,6 +119,15 @@ def main():
              .agg(F.countDistinct("trip_id").alias("trips"),
                   F.sum("fare").alias("earnings")))
 
+    # The zone a vehicle spent most of the day in. A vehicle moves between zones,
+    # so there is no single "its zone" - but the dominant one is what an operator
+    # needs in order to act on an unprofitable vehicle.
+    busiest = Window.partitionBy("vehicle_id").orderBy(F.desc("events"), F.asc("zone"))
+    main_zone = (day.groupBy("vehicle_id", "zone").agg(F.count("*").alias("events"))
+                 .withColumn("_rn", F.row_number().over(busiest))
+                 .filter(F.col("_rn") == 1)
+                 .select("vehicle_id", F.col("zone").alias("main_zone")))
+
     # ---------- 2. costs from the daily expense file ----------
     expenses_path = os.path.join(LANDING_DIR, f"expenses_{date}.csv")
     expenses = (spark.read.option("header", True).option("inferSchema", True)
@@ -128,6 +137,7 @@ def main():
     # ---------- 3. join and compute profit ----------
     # full outer: a vehicle with costs but no trips is exactly the case we care about
     joined = (expenses.join(trips, on="vehicle_id", how="full_outer")
+              .join(main_zone, on="vehicle_id", how="left")
               .withColumn("trips", F.coalesce(F.col("trips"), F.lit(0)))
               .withColumn("earnings", F.round(F.coalesce(F.col("earnings"), F.lit(0.0)), 2))
               .withColumn("fuel_cost", F.coalesce(F.col("fuel_cost"), F.lit(0.0)))
@@ -139,9 +149,9 @@ def main():
                                  F.round(F.col("profit") / F.col("earnings"), 4)))
               .withColumn("is_unprofitable", F.col("profit") < 0)
               .withColumn("report_date", F.to_date(F.lit(date)))
-              .select("report_date", "vehicle_id", "trips", "earnings", "distance_covered",
-                      "fuel_cost", "maintenance_cost", "total_cost", "profit",
-                      "profit_margin", "service_flag", "is_unprofitable"))
+              .select("report_date", "vehicle_id", "main_zone", "trips", "earnings",
+                      "distance_covered", "fuel_cost", "maintenance_cost", "total_cost",
+                      "profit", "profit_margin", "service_flag", "is_unprofitable"))
 
     joined.write.jdbc(JDBC_URL, "stg_daily_profitability", mode="overwrite", properties=PG_PROPS)
 
@@ -172,11 +182,13 @@ def main():
     # ---------- 4. alert on vehicles that lost money ----------
     execute_sql(spark, f"""
         INSERT INTO alerts (alert_type, severity, vehicle_id, zone, message, sim_time)
-        SELECT 'UNPROFITABLE', 'CRITICAL', d.vehicle_id, NULL,
+        SELECT 'UNPROFITABLE', 'CRITICAL', d.vehicle_id, s.main_zone,
                'Lost ' || ROUND(ABS(d.profit)) || ' LKR on ' || d.report_date ||
                ' (' || d.trips || ' trips)',
                d.report_date::timestamp
         FROM daily_vehicle_profitability d
+        LEFT JOIN stg_daily_profitability s
+               ON s.vehicle_id = d.vehicle_id AND s.report_date = d.report_date
         WHERE d.report_date = DATE '{date}'
           AND d.is_unprofitable
           AND NOT EXISTS (
