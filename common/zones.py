@@ -3,14 +3,28 @@
 The telemetry events carry only lat/lon, as the brief specifies. Turning a
 coordinate into a zone is a processing concern, so both the speed layer and
 the batch layer import zone_of() from here and stay consistent.
+
+The four boxes TILE the operating area with no gaps: an earlier version left
+48% of the area uncovered, so nearly every vehicle was reported in a zone
+called "Unknown" and earnings could not be attributed to an area.
 """
 import math
 
+# Operating area, split into quadrants at the mid lat/lon.
+LAT_MIN, LAT_MAX = 6.8380, 6.9480
+LON_MIN, LON_MAX = 79.8360, 79.8950
+LAT_MID = (LAT_MIN + LAT_MAX) / 2      # 6.8930
+LON_MID = (LON_MIN + LON_MAX) / 2      # 79.8655
+
 ZONES = [
-    {"name": "Fort",        "lat": (6.9260, 6.9480), "lon": (79.8360, 79.8580)},
-    {"name": "Kollupitiya", "lat": (6.9000, 6.9260), "lon": (79.8400, 79.8650)},
-    {"name": "Borella",     "lat": (6.9000, 6.9300), "lon": (79.8650, 79.8950)},
-    {"name": "Dehiwala",    "lat": (6.8380, 6.8760), "lon": (79.8540, 79.8880)},
+    {"name": "Fort",        "lat": (LAT_MID, LAT_MAX), "lon": (
+        LON_MIN, LON_MID)},  # north-west
+    {"name": "Borella",     "lat": (LAT_MID, LAT_MAX), "lon": (
+        LON_MID, LON_MAX)},  # north-east
+    {"name": "Kollupitiya", "lat": (LAT_MIN, LAT_MID), "lon": (
+        LON_MIN, LON_MID)},  # south-west
+    {"name": "Dehiwala",    "lat": (LAT_MIN, LAT_MID), "lon": (
+        LON_MID, LON_MAX)},  # south-east
 ]
 
 ZONE_NAMES = [z["name"] for z in ZONES]

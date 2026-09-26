@@ -143,8 +143,7 @@ services:
     working_dir: /opt/app
     # NOTE: keep this as one line. In YAML folded style an extra-indented line
     # keeps its newline, which would split the command in the middle.
-    command: ["bash", "-c", "airflow db migrate && (airflow users create --role Admin --username admin --password admin --firstname fleet --lastname ops --email admin@example.com || true) && (airflow scheduler &) && exec airflow webserver"]
-
+    command: ["bash", "-c", "airflow db migrate && (airflow users create --role Admin --username admin --password admin --firstname fleet --lastname ops --email admin@example.com || true) && (airflow connections add fs_default --conn-type fs || true) && (airflow scheduler &) && exec airflow webserver"]
   # ---------- SERVING LAYER: REST API ----------
   api:
     build: ./serving

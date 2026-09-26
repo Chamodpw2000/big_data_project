@@ -22,8 +22,19 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Query
 
 PG_DSN = os.getenv("PG_DSN", "postgresql://fleet:fleet@postgres:5432/fleet")
-STALE_AFTER_SECONDS = int(os.getenv("STALE_AFTER_SECONDS", "60"))
 CURRENCY = "LKR"
+
+# Components run at very different cadences, so one staleness threshold does not
+# fit all: the streaming sinks beat every few seconds, while the batch job runs
+# once per simulated day (24 real minutes) and would always look "stale".
+STALE_AFTER_SECONDS = int(os.getenv("STALE_AFTER_SECONDS", "60"))
+BATCH_STALE_AFTER_SECONDS = int(
+    os.getenv("BATCH_STALE_AFTER_SECONDS", "3000"))  # ~2 sim days
+
+
+def stale_threshold(component: str) -> int:
+    return BATCH_STALE_AFTER_SECONDS if component.startswith("batch") else STALE_AFTER_SECONDS
+
 
 app = FastAPI(
     title="Fleet Operations API",
@@ -63,7 +74,8 @@ def health():
     components = []
     healthy = True
     for r in rows:
-        stale = float(r["age_seconds"]) > STALE_AFTER_SECONDS
+        limit = stale_threshold(r["component"])
+        stale = float(r["age_seconds"]) > limit
         if stale or r["status"] != "OK":
             healthy = False
         components.append({
@@ -71,6 +83,7 @@ def health():
             "status": "STALE" if stale else r["status"],
             "last_seen": r["last_seen"],
             "seconds_since": round(float(r["age_seconds"]), 1),
+            "stale_after_seconds": limit,
             "records_last": r["records_last"],
             "details": r["details"],
         })
@@ -79,7 +92,6 @@ def health():
     return {
         "status": "healthy" if healthy else "degraded",
         "checked_at": datetime.utcnow(),
-        "stale_after_seconds": STALE_AFTER_SECONDS,
         "components": components,
     }
 
@@ -104,11 +116,16 @@ def realtime_metrics():
         (fleet["idle"] or 0) / size, 4) if size else None
     fleet["utilization"] = round(busy / size, 4) if size else None
 
+    # Only zones seen in the last couple of simulated hours. Without this, a zone
+    # that stopped receiving events (e.g. one retired by a config change) would
+    # keep showing its last window forever.
     zones = query("""
         SELECT DISTINCT ON (zone)
                zone, window_start, window_end, active_vehicles,
                trips_completed AS trips_per_hour, idle_ratio, earnings
         FROM realtime_zone_metrics
+        WHERE window_start >= (SELECT MAX(window_start) FROM realtime_zone_metrics)
+                              - INTERVAL '2 hours'
         ORDER BY zone, window_start DESC
     """)
     zones = [as_float(z, "idle_ratio", "earnings") for z in zones]
