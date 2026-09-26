@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="780" viewBox="0 0 1180 780" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+<title id="t">Lambda architecture for the ride-hailing fleet pipeline</title>
+<desc id="d">GPS telemetry flows through Kafka into Spark Structured Streaming, which writes real-time metrics to PostgreSQL and raw events to a Parquet lake. A daily expense CSV is detected by an Airflow FileSensor, which runs a Spark batch job that joins the lake with the expenses and writes per-vehicle profitability to PostgreSQL and to report files. FastAPI and a Streamlit dashboard serve both layers.</desc>
+
+<rect width="1180" height="780" fill="#ffffff"/>
+
+<text x="30" y="34" font-size="20" font-weight="600" fill="#1f2933">Ride-hailing fleet operations — Lambda architecture</text>
+<text x="30" y="55" font-size="13" fill="#5b6672">1 simulated day = 24 real minutes · 20 vehicles · 4 zones · all timestamps are simulated time</text>
+
+<!-- ============ SPEED LAYER ============ -->
+<rect x="30" y="76" width="930" height="172" rx="10" fill="#eef6ff" stroke="#9ec5f0" stroke-width="1.5"/>
+<text x="48" y="100" font-size="13" font-weight="600" fill="#1c4f86">SPEED LAYER — always on, seconds</text>
+
+<rect x="50" y="118" width="176" height="76" rx="8" fill="#ffffff" stroke="#9ec5f0" stroke-width="1.5"/>
+<text x="138" y="146" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">GPS simulator</text>
+<text x="138" y="165" font-size="11.5" text-anchor="middle" fill="#5b6672">20 vehicles, every 2–3 s</text>
+<text x="138" y="181" font-size="11.5" text-anchor="middle" fill="#5b6672">5% late events</text>
+
+<rect x="266" y="118" width="176" height="76" rx="8" fill="#ffffff" stroke="#9ec5f0" stroke-width="1.5"/>
+<text x="354" y="146" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Kafka</text>
+<text x="354" y="165" font-size="11.5" text-anchor="middle" fill="#5b6672">topic: fleet.telemetry</text>
+<text x="354" y="181" font-size="11.5" text-anchor="middle" fill="#5b6672">3 partitions · key = vehicle_id</text>
+
+<rect x="482" y="118" width="210" height="76" rx="8" fill="#ffffff" stroke="#9ec5f0" stroke-width="1.5"/>
+<text x="587" y="142" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Spark Structured Streaming</text>
+<text x="587" y="161" font-size="11.5" text-anchor="middle" fill="#5b6672">event time · 1-hour windows</text>
+<text x="587" y="177" font-size="11.5" text-anchor="middle" fill="#5b6672">10-min watermark · idle state</text>
+
+<line x1="226" y1="156" x2="260" y2="156" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="442" y1="156" x2="476" y2="156" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+
+<!-- speed -> postgres -->
+<line x1="692" y1="140" x2="974" y2="140" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="833" y="132" font-size="11" text-anchor="middle" fill="#5b6672">zone metrics · status · alerts</text>
+
+<!-- ============ PARQUET LAKE ============ -->
+<rect x="482" y="272" width="210" height="72" rx="8" fill="#fff6e6" stroke="#e0b063" stroke-width="1.8"/>
+<text x="587" y="298" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Parquet lake</text>
+<text x="587" y="316" font-size="11.5" text-anchor="middle" fill="#5b6672">master dataset, append-only</text>
+<text x="587" y="332" font-size="11.5" text-anchor="middle" fill="#5b6672">partitioned by event_date</text>
+
+<line x1="587" y1="194" x2="587" y2="266" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="600" y="235" font-size="11" fill="#5b6672">every raw event</text>
+
+<!-- ============ BATCH LAYER ============ -->
+<rect x="30" y="372" width="930" height="188" rx="10" fill="#f4f0ff" stroke="#b6a9e8" stroke-width="1.5"/>
+<text x="48" y="396" font-size="13" font-weight="600" fill="#4b3a91">BATCH LAYER — once per simulated day, accurate</text>
+
+<rect x="50" y="424" width="176" height="76" rx="8" fill="#ffffff" stroke="#b6a9e8" stroke-width="1.5"/>
+<text x="138" y="452" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Expense simulator</text>
+<text x="138" y="471" font-size="11.5" text-anchor="middle" fill="#5b6672">1 CSV per simulated day</text>
+<text x="138" y="487" font-size="11.5" text-anchor="middle" fill="#5b6672">fuel · maintenance · km</text>
+
+<rect x="266" y="424" width="176" height="76" rx="8" fill="#ffffff" stroke="#b6a9e8" stroke-width="1.5"/>
+<text x="354" y="452" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Landing folder</text>
+<text x="354" y="471" font-size="11.5" text-anchor="middle" fill="#5b6672">expenses_&lt;date&gt;.csv</text>
+<text x="354" y="487" font-size="11.5" text-anchor="middle" fill="#5b6672">written atomically</text>
+
+<rect x="482" y="412" width="210" height="100" rx="8" fill="#ffffff" stroke="#b6a9e8" stroke-width="1.5"/>
+<text x="587" y="436" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Airflow DAG</text>
+<text x="587" y="456" font-size="11.5" text-anchor="middle" fill="#5b6672">FileSensor → validate</text>
+<text x="587" y="473" font-size="11.5" text-anchor="middle" fill="#5b6672">→ spark-submit → check</text>
+<text x="587" y="494" font-size="11.5" text-anchor="middle" fill="#5b6672">every 12 real minutes</text>
+
+<rect x="732" y="424" width="176" height="76" rx="8" fill="#ffffff" stroke="#b6a9e8" stroke-width="1.5"/>
+<text x="820" y="448" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Spark batch job</text>
+<text x="820" y="467" font-size="11.5" text-anchor="middle" fill="#5b6672">join lake + expenses</text>
+<text x="820" y="483" font-size="11.5" text-anchor="middle" fill="#5b6672">profit = earn − costs</text>
+
+<line x1="226" y1="462" x2="260" y2="462" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="442" y1="462" x2="476" y2="462" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="692" y1="462" x2="726" y2="462" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+
+<!-- lake -> batch job (L route around the DAG box) -->
+<path d="M 692 308 L 820 308 L 820 418" fill="none" stroke="#c98a1f" stroke-width="1.8" marker-end="url(#b)"/>
+<text x="828" y="330" font-size="11" fill="#a8720f">yesterday's events</text>
+
+<!-- batch -> postgres -->
+<path d="M 908 448 L 940 448 L 940 300 L 974 300" fill="none" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="905" y="356" font-size="11" text-anchor="middle" fill="#5b6672">profitability</text>
+
+<!-- ============ POSTGRES ============ -->
+<rect x="976" y="118" width="172" height="286" rx="10" fill="#eef2f7" stroke="#8fa3bb" stroke-width="1.8"/>
+<text x="1062" y="146" font-size="14" font-weight="600" text-anchor="middle" fill="#1f2933">PostgreSQL</text>
+<text x="1062" y="165" font-size="11.5" text-anchor="middle" fill="#5b6672">serving store</text>
+<line x1="996" y1="178" x2="1128" y2="178" stroke="#c3cfdd" stroke-width="1"/>
+<text x="1000" y="202" font-size="11.5" fill="#39434f">realtime_zone_metrics</text>
+<text x="1000" y="224" font-size="11.5" fill="#39434f">vehicle_status</text>
+<text x="1000" y="246" font-size="11.5" fill="#39434f">alerts</text>
+<line x1="996" y1="262" x2="1128" y2="262" stroke="#c3cfdd" stroke-width="1"/>
+<text x="1000" y="286" font-size="11.5" fill="#39434f">daily_vehicle_</text>
+<text x="1000" y="303" font-size="11.5" fill="#39434f">profitability</text>
+<line x1="996" y1="320" x2="1128" y2="320" stroke="#c3cfdd" stroke-width="1"/>
+<text x="1000" y="344" font-size="11.5" fill="#39434f">pipeline_heartbeat</text>
+<text x="1000" y="372" font-size="11" fill="#7c8794">both layers write here;</text>
+<text x="1000" y="388" font-size="11" fill="#7c8794">the API only reads</text>
+
+<!-- ============ SERVING LAYER ============ -->
+<rect x="30" y="590" width="1118" height="160" rx="10" fill="#ecfaf2" stroke="#8fd3b4" stroke-width="1.5"/>
+<text x="48" y="614" font-size="13" font-weight="600" fill="#1d6b4c">SERVING LAYER — reads pre-computed views only</text>
+
+<rect x="976" y="634" width="172" height="86" rx="8" fill="#ffffff" stroke="#8fd3b4" stroke-width="1.5"/>
+<text x="1062" y="662" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">FastAPI</text>
+<text x="1062" y="681" font-size="11.5" text-anchor="middle" fill="#5b6672">/metrics/realtime</text>
+<text x="1062" y="697" font-size="11.5" text-anchor="middle" fill="#5b6672">/profitability · /alerts</text>
+<text x="1062" y="713" font-size="11.5" text-anchor="middle" fill="#5b6672">/health</text>
+
+<rect x="700" y="634" width="200" height="86" rx="8" fill="#ffffff" stroke="#8fd3b4" stroke-width="1.5"/>
+<text x="800" y="666" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Streamlit dashboard</text>
+<text x="800" y="686" font-size="11.5" text-anchor="middle" fill="#5b6672">live KPIs, zone charts,</text>
+<text x="800" y="702" font-size="11.5" text-anchor="middle" fill="#5b6672">alerts, daily profitability</text>
+
+<rect x="440" y="634" width="200" height="86" rx="8" fill="#ffffff" stroke="#8fd3b4" stroke-width="1.5"/>
+<text x="540" y="666" font-size="13.5" font-weight="600" text-anchor="middle" fill="#1f2933">Daily report files</text>
+<text x="540" y="686" font-size="11.5" text-anchor="middle" fill="#5b6672">profitability_&lt;date&gt;</text>
+<text x="540" y="702" font-size="11.5" text-anchor="middle" fill="#5b6672">.csv and .html</text>
+
+<line x1="1062" y1="404" x2="1062" y2="628" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="970" y1="677" x2="906" y2="677" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="938" y="669" font-size="11" text-anchor="middle" fill="#5b6672">HTTP</text>
+<path d="M 820 500 L 820 560 L 540 560 L 540 628" fill="none" stroke="#5b6672" stroke-width="1.6" marker-end="url(#a)"/>
+
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#5b6672"/>
+</marker>
+<marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#c98a1f"/>
+</marker>
+</defs>
+</svg>
